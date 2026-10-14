@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -157,6 +158,49 @@ KNOWN_SENSORS = {
 }
 
 
+# Top-level keys of the coordinator data, see api._ENDPOINTS.
+SECTION_NAMES = {
+    "cellular": "Cellular",
+    "traffic": "Traffic",
+    "cardpage": "Overview",
+    "lan": "LAN",
+    "lanhosts": "LAN hosts",
+    "wifi_mesh": "Wi-Fi mesh",
+    "one_connect": "OneConnect",
+    "device": "Device",
+}
+
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _humanize(token: str) -> str:
+    """Turn a raw key such as 'X_ZYXEL_InterfaceUpTime' into 'Interface Up Time'."""
+    token = re.sub(r"^X_(ZYXEL_)?", "", token)
+    words = []
+    for part in token.split("_"):
+        words.extend(_CAMEL_BOUNDARY.sub(" ", part).split())
+    return " ".join(words).replace("Wi Fi", "Wi-Fi")
+
+
+def _readable_name(key: str, leaf: str | None = None) -> str:
+    """Build a readable, unique name from a flattened key.
+
+    ``traffic.br0.BytesReceived`` -> ``Traffic br0 Bytes Received``. ``leaf``
+    replaces the last path element (used for known sensors with curated names).
+    """
+    section, *path = key.split(".")
+    if leaf is not None:
+        path = path[:-1]
+    parts = [SECTION_NAMES.get(section, _humanize(section))]
+    parts.extend(_humanize(p) for p in path)
+    # "Device" + "Device Info ..." would read "Device Device Info ...".
+    if len(parts) > 1 and parts[1].split(" ")[0] == parts[0]:
+        parts = parts[:1] + [parts[1].removeprefix(parts[0]).strip()] + parts[2:]
+    if leaf is not None:
+        parts.append(leaf)
+    return " ".join(parts)
+
+
 def _flatten_dict(d: dict, parent_key: str = "") -> dict:
     """Flatten a nested dictionary with dot notation for keys."""
     items = []
@@ -263,7 +307,7 @@ class ConfiguredZyxelSensor(AbstractZyxelSensor):
         """Initialize the sensor."""
         super().__init__(coordinator, entry, key)
         self._config = config
-        self._attr_name = f"Zyxel {config['name']}"
+        self._attr_name = f"Zyxel {_readable_name(key, config['name'])}"
         self._attr_native_unit_of_measurement = config["unit"]
         self._attr_icon = config["icon"]
         self._attr_device_class = config["device_class"]
@@ -284,8 +328,7 @@ class GenericZyxelSensor(AbstractZyxelSensor):
     @property
     def name(self):
         """Return the name of the sensor."""
-        name_parts = self._key.split(".")
-        return f"Zyxel {'.'.join(name_parts)}"
+        return f"Zyxel {_readable_name(self._key)}"
 
     @property
     def state(self):
