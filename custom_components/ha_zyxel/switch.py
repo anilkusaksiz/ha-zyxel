@@ -30,17 +30,36 @@ async def async_setup_entry(
         for rule in rules
         if "Index" in rule
     ]
+    default_on = _default_enabled_ssids(ssids)
     entities += [
-        WifiSwitch(coordinator, data["router"], entry, ssid["Index"], bool(ssid.get("MainSSID")))
+        WifiSwitch(coordinator, data["router"], entry, ssid["Index"], ssid["Index"] in default_on)
         for ssid in ssids
     ]
     async_add_entities(entities)
+
+
+def _default_enabled_ssids(ssids: list[dict[str, Any]]) -> set[int]:
+    """Indexes enabled by default: main networks and the first guest per band.
+
+    The modem ships several unused guest slots (guest2..guest4); only the first
+    guest network per band is created enabled, the rest can be enabled by hand.
+    """
+    enabled: set[int] = set()
+    seen_guest_bands: set[str] = set()
+    for ssid in sorted(ssids, key=lambda s: s["Index"]):
+        if ssid.get("MainSSID"):
+            enabled.add(ssid["Index"])
+        elif ssid.get("band") not in seen_guest_bands:
+            seen_guest_bands.add(ssid.get("band"))
+            enabled.add(ssid["Index"])
+    return enabled
 
 
 class PortForwardSwitch(CoordinatorEntity, SwitchEntity):
     """Enable or disable a single port-forward rule."""
 
     _attr_icon = "mdi:router-network"
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator, router, entry: ConfigEntry, index: int) -> None:
         super().__init__(coordinator)
@@ -62,7 +81,7 @@ class PortForwardSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def name(self) -> str:
         rule = self._rule() or {}
-        return f"Zyxel Port Forward {rule.get('Description') or self._index}"
+        return f"Port Forward {rule.get('Description') or self._index}"
 
     @property
     def is_on(self) -> bool | None:
@@ -107,16 +126,15 @@ class WifiSwitch(CoordinatorEntity, SwitchEntity):
     """Enable or disable one Wi-Fi network (SSID) on one band."""
 
     _attr_icon = "mdi:wifi"
+    _attr_has_entity_name = True
 
-    def __init__(self, coordinator, router, entry: ConfigEntry, index: int, main: bool) -> None:
+    def __init__(self, coordinator, router, entry: ConfigEntry, index: int, default_on: bool) -> None:
         super().__init__(coordinator)
         self._router = router
         self._index = index
         self._attr_unique_id = f"{entry.entry_id}_wlan_{index}"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
-        # Upstream keeps main networks opt-in (disabled by default), since
-        # switching one off cuts normal Wi-Fi. This fork exposes them by default.
-        self._attr_entity_registry_enabled_default = True
+        self._attr_entity_registry_enabled_default = default_on
 
     def _ssid(self) -> dict[str, Any] | None:
         for ssid in (self.coordinator.data or {}).get("wlan_ssids") or []:
@@ -131,7 +149,7 @@ class WifiSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def name(self) -> str:
         ssid = self._ssid() or {}
-        return f"Zyxel Wi-Fi {ssid.get('SSID') or self._index} ({ssid.get('band', '?')})"
+        return f"{ssid.get('SSID') or self._index} ({ssid.get('band', '?')})"
 
     @property
     def is_on(self) -> bool | None:

@@ -311,6 +311,9 @@ async def async_setup_entry(
 class AbstractZyxelSensor(CoordinatorEntity, SensorEntity):
     """Base class for Zyxel device sensors."""
 
+    # The device name already says "Zyxel", so entity names omit the prefix.
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator, entry: ConfigEntry, key: str):
         """Initialize the sensor."""
         super().__init__(coordinator)
@@ -352,7 +355,7 @@ class ConfiguredZyxelSensor(AbstractZyxelSensor):
         """Initialize the sensor."""
         super().__init__(coordinator, entry, key)
         self._config = config
-        self._attr_name = f"Zyxel {_readable_name(key, config['name'])}"
+        self._attr_name = _readable_name(key, config["name"])
         self._attr_native_unit_of_measurement = config["unit"]
         self._attr_icon = config["icon"]
         self._attr_device_class = config["device_class"]
@@ -380,7 +383,7 @@ class GenericZyxelSensor(AbstractZyxelSensor):
     @property
     def name(self):
         """Return the name of the sensor."""
-        return f"Zyxel {_readable_name(self._key)}"
+        return _readable_name(self._key)
 
     @property
     def state(self):

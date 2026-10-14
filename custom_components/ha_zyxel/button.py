@@ -34,7 +34,8 @@ class ZyxelRebootButton(ButtonEntity):
             model="",
         )
         self._attr_icon = "mdi:restart"
-        self._attr_name = "Zyxel Reboot Device"
+        self._attr_has_entity_name = True
+        self._attr_name = "Reboot Device"
 
     def _reboot(self) -> None:
         with self._router.ha_zyxel_lock:
