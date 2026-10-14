@@ -170,6 +170,23 @@ SECTION_NAMES = {
     "device": "Device",
 }
 
+# Generic sensors are created for every scalar the modem reports (hundreds,
+# mostly static configuration). Only these stay enabled by default; the rest
+# are created disabled and can be enabled from the entity registry. Everything
+# in the "cellular" section is always enabled by default.
+ENABLED_BY_DEFAULT = {
+    "device.DeviceInfo.UpTime",
+    "device.DeviceInfo.SoftwareVersion",
+    "device.DeviceInfo.ModelName",
+    "device.SystemInfo.CPUUsage",
+    "device.SystemInfo.Free",
+    "device.SystemInfo.Total",
+    "device.WanRate_RX",
+    "device.WanRate_TX",
+    "device.WanType",
+    "lanhosts.wanInfo.wanStatus",
+}
+
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
@@ -216,6 +233,25 @@ def _flatten_dict(d: dict, parent_key: str = "") -> dict:
     return dict(items)
 
 
+def _is_duplicate(key: str, data: dict) -> bool:
+    """Return True if an "Overview" value just repeats the "Device" section."""
+    section, _, path = key.partition(".")
+    if section != "cardpage":
+        return False
+    device = data.get("device")
+    for part in path.split("."):
+        if not isinstance(device, dict) or part not in device:
+            return False
+        device = device[part]
+    return device == _get_path(data["cardpage"], path)
+
+
+def _get_path(data: dict, path: str) -> Any:
+    for part in path.split("."):
+        data = data[part]
+    return data
+
+
 def _is_value_scalar(value: Any) -> bool:
     """Check if a value is a scalar (string, number, bool)."""
     return isinstance(value, (str, int, float, bool)) or value is None
@@ -237,6 +273,10 @@ async def async_setup_entry(
     for key, value in _flatten_dict(coordinator.data).items():
         # Skip non-scalar values
         if not _is_value_scalar(value):
+            continue
+
+        # The Overview and Device sections report many identical values.
+        if _is_duplicate(key, coordinator.data):
             continue
 
         # Check if this is a known sensor type
@@ -327,6 +367,13 @@ class ConfiguredZyxelSensor(AbstractZyxelSensor):
 
 class GenericZyxelSensor(AbstractZyxelSensor):
     """Representation of a generic Zyxel sensor."""
+
+    def __init__(self, coordinator, entry: ConfigEntry, key: str):
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, key)
+        self._attr_entity_registry_enabled_default = (
+            key in ENABLED_BY_DEFAULT or key.startswith("cellular.")
+        )
 
     @property
     def name(self):
