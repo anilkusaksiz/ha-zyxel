@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Any
 
 import requests
@@ -126,6 +127,16 @@ def fetch_status(router: Any) -> dict[str, Any]:
                 result["nat_rules"] = rules
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Zyxel port forwards are unavailable: %s", err)
+        try:
+            # X_ZYXEL_Attribute 2 is an internal (mesh/backhaul) SSID.
+            ssids = [
+                s for s in get_objects(router, "wlan")
+                if "Index" in s and "wlEnable" in s and s.get("X_ZYXEL_Attribute") != 2
+            ]
+            if ssids:
+                result["wlan_ssids"] = ssids
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Zyxel Wi-Fi SSIDs are unavailable: %s", err)
         return result
 
 
@@ -221,3 +232,30 @@ def _fetch_status_locked(router: Any) -> dict[str, Any]:
     raise ZyxelConnectionError(
         "The router returned no supported status data"
     ) from last_error
+
+
+def set_wifi_enabled(router: Any, index: int, enabled: bool) -> None:
+    """Enable or disable one SSID. Sends only the index and the flag.
+
+    The modem applies Wi-Fi changes asynchronously and can drop a second change
+    that arrives right after the first, so verify by reading the state back and
+    resend once if it did not stick.
+    """
+
+    def applied() -> bool:
+        with router.ha_zyxel_lock:
+            for ssid in get_objects(router, "wlan"):
+                if ssid.get("Index") == index:
+                    return bool(ssid.get("wlEnable")) == enabled
+        return False
+
+    for attempt in range(2):
+        reply = put_object(router, "wlan", {"Index": index, "wlEnable": enabled})
+        if reply.get("result") != "ZCFG_SUCCESS":
+            raise ZyxelConnectionError(f"Router refused the change: {reply}")
+        for _ in range(4):
+            time.sleep(2)
+            if applied():
+                return
+        _LOGGER.debug("Wi-Fi change for SSID %s not applied, attempt %s", index, attempt + 1)
+    raise ZyxelConnectionError(f"Router did not apply the Wi-Fi change for SSID {index}")

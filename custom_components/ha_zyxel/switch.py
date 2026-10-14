@@ -11,7 +11,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from custom_components.ha_zyxel.api import set_port_forward_enabled
+from custom_components.ha_zyxel.api import set_port_forward_enabled, set_wifi_enabled
 from custom_components.ha_zyxel.const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,11 +24,17 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
     rules = (coordinator.data or {}).get("nat_rules") or []
-    async_add_entities(
+    ssids = (coordinator.data or {}).get("wlan_ssids") or []
+    entities: list[SwitchEntity] = [
         PortForwardSwitch(coordinator, data["router"], entry, rule["Index"])
         for rule in rules
         if "Index" in rule
-    )
+    ]
+    entities += [
+        WifiSwitch(coordinator, data["router"], entry, ssid["Index"], bool(ssid.get("MainSSID")))
+        for ssid in ssids
+    ]
+    async_add_entities(entities)
 
 
 class PortForwardSwitch(CoordinatorEntity, SwitchEntity):
@@ -95,3 +101,65 @@ class PortForwardSwitch(CoordinatorEntity, SwitchEntity):
 def _ports(rule: dict[str, Any], side: str) -> str:
     start, end = rule.get(f"{side}PortStart"), rule.get(f"{side}PortEnd")
     return str(start) if start == end else f"{start}-{end}"
+
+
+class WifiSwitch(CoordinatorEntity, SwitchEntity):
+    """Enable or disable one Wi-Fi network (SSID) on one band."""
+
+    _attr_icon = "mdi:wifi"
+
+    def __init__(self, coordinator, router, entry: ConfigEntry, index: int, main: bool) -> None:
+        super().__init__(coordinator)
+        self._router = router
+        self._index = index
+        self._attr_unique_id = f"{entry.entry_id}_wlan_{index}"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        # Switching off a main network cuts normal Wi-Fi: opt-in only.
+        self._attr_entity_registry_enabled_default = not main
+
+    def _ssid(self) -> dict[str, Any] | None:
+        for ssid in (self.coordinator.data or {}).get("wlan_ssids") or []:
+            if ssid.get("Index") == self._index:
+                return ssid
+        return None
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and self._ssid() is not None
+
+    @property
+    def name(self) -> str:
+        ssid = self._ssid() or {}
+        return f"Zyxel Wi-Fi {ssid.get('SSID') or self._index} ({ssid.get('band', '?')})"
+
+    @property
+    def is_on(self) -> bool | None:
+        ssid = self._ssid()
+        return None if ssid is None else bool(ssid.get("wlEnable"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        ssid = self._ssid() or {}
+        return {
+            "band": ssid.get("band"),
+            "main_network": ssid.get("MainSSID"),
+            "channel": ssid.get("channel"),
+            "ssid_index": self._index,
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._set(False)
+
+    async def _set(self, enabled: bool) -> None:
+        ssid = self._ssid()
+        if ssid is None:
+            return
+        await self.hass.async_add_executor_job(
+            set_wifi_enabled, self._router, self._index, enabled
+        )
+        ssid["wlEnable"] = enabled
+        self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
