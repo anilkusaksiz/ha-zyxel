@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import os
 import threading
 from typing import Any
 
+import requests
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 from nr7101 import nr7101
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,7 +117,91 @@ def _fetch_available_endpoints(
 def fetch_status(router: Any) -> dict[str, Any]:
     """Return available router data, reauthenticating once when necessary."""
     with router.ha_zyxel_lock:
-        return _fetch_status_locked(router)
+        result = _fetch_status_locked(router)
+        # Port forwards are a list of objects, which get_json_object() (first
+        # object only) cannot return. Optional: not every model has them.
+        try:
+            rules = get_objects(router, "nat")
+            if rules:
+                result["nat_rules"] = rules
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Zyxel port forwards are unavailable: %s", err)
+        return result
+
+
+def _decode(router: Any, response: requests.Response) -> dict[str, Any]:
+    """Decrypt a router response, tolerating plain JSON replies."""
+    data = response.json()
+    if router.encryption_required and "iv" in data and "content" in data:
+        return router.decrypt_response(data)
+    return data
+
+
+def get_objects(router: Any, oid: str) -> list[dict[str, Any]]:
+    """Return every object of a DAL oid (get_json_object only returns the first)."""
+    url = f"{router.url}/cgi-bin/DAL?oid={oid}&sessionkey={router.sessionkey}"
+    with requests.get(url, **router.params) as response:
+        response.raise_for_status()
+        data = _decode(router, response)
+    if data.get("result") != "ZCFG_SUCCESS":
+        return []
+    return data.get("Object") or []
+
+
+def _encrypt_body(router: Any, payload: dict[str, Any]) -> str:
+    """Encrypt a request body like the web UI does after login.
+
+    Same AES key as the login request, fresh IV per request, and no RSA key.
+    """
+    iv = os.urandom(32)
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    cipher = AES.new(router.aes_key, AES.MODE_CBC, iv[:16])
+    return json.dumps(
+        {
+            "content": base64.b64encode(cipher.encrypt(pad(body, 16))).decode(),
+            "iv": base64.b64encode(iv).decode(),
+        }
+    )
+
+
+def put_object(router: Any, oid: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """PUT an object to /cgi-bin/DAL?oid=..., as the web UI does.
+
+    The modem hands out a fresh session key in each reply and rejects the old
+    one with 403, so keep ``router.sessionkey`` in sync like the web UI does.
+    """
+    with router.ha_zyxel_lock:
+        if not getattr(router, "sessionkey", None):
+            authenticate(router)
+        for attempt in range(2):
+            data = _encrypt_body(router, payload) if router.encryption_required else json.dumps(payload)
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "CSRFToken": str(router.sessionkey),
+            }
+            params = dict(router.params)
+            params["headers"] = {**params.get("headers", {}), **headers}
+            with requests.put(
+                f"{router.url}/cgi-bin/DAL?oid={oid}", data=data.encode("utf-8"), **params
+            ) as response:
+                if response.status_code in (401, 403) and attempt == 0:
+                    router.sessionkey = None
+                    authenticate(router)
+                    continue
+                response.raise_for_status()
+                reply = _decode(router, response)
+            if reply.get("sessionkey"):
+                router.sessionkey = reply["sessionkey"]
+            return reply
+    raise ZyxelConnectionError("Router rejected the request")
+
+
+def set_port_forward_enabled(router: Any, rule: dict[str, Any], enabled: bool) -> None:
+    """Enable or disable one port-forward rule, keeping all its other fields."""
+    reply = put_object(router, "nat", {**rule, "Enable": enabled})
+    if reply.get("result") != "ZCFG_SUCCESS":
+        raise ZyxelConnectionError(f"Router refused the change: {reply}")
 
 
 def _fetch_status_locked(router: Any) -> dict[str, Any]:
