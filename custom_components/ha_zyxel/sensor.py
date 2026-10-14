@@ -209,7 +209,9 @@ def _readable_name(key: str, leaf: str | None = None) -> str:
     if leaf is not None:
         path = path[:-1]
     parts = [SECTION_NAMES.get(section, _humanize(section))]
-    parts.extend(_humanize(p) for p in path)
+    # Skip empty path elements (the modem reports one traffic entry with no
+    # interface name), otherwise the name contains a double space.
+    parts.extend(h for h in (_humanize(p) for p in path) if h)
     # "Device" + "Device Info ..." would read "Device Device Info ...".
     if len(parts) > 1 and parts[1].split(" ")[0] == parts[0]:
         parts = parts[:1] + [parts[1].removeprefix(parts[0]).strip()] + parts[2:]
