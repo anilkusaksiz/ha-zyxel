@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from nr7101 import nr7101
@@ -21,6 +22,21 @@ _ENDPOINTS = (
 )
 
 
+# The modem keeps a single login session per user: a new login invalidates the
+# AES key of the previous one, so any request still in flight decrypts to
+# garbage ("'utf-8' codec can't decode byte ..."). Serialize every operation
+# that touches a given modem, across config flow, polling and button presses.
+_HOST_LOCKS: dict[str, threading.RLock] = {}
+_HOST_LOCKS_GUARD = threading.Lock()
+
+
+def get_host_lock(host: str) -> threading.RLock:
+    """Return the lock shared by all router instances for the same host."""
+    key = host.lower().rstrip("/")
+    with _HOST_LOCKS_GUARD:
+        return _HOST_LOCKS.setdefault(key, threading.RLock())
+
+
 class ZyxelAuthenticationError(Exception):
     """Raised when the router rejects the supplied credentials."""
 
@@ -37,7 +53,9 @@ def create_router(host: str, username: str, password: str) -> Any:
     config-flow instance being reused by the config-entry instance, where
     they would be paired with a different AES key.
     """
-    return nr7101.NR7101(host, username, password, {})
+    router = nr7101.NR7101(host, username, password, {})
+    router.ha_zyxel_lock = get_host_lock(host)
+    return router
 
 
 def authenticate(router: Any) -> None:
@@ -92,6 +110,11 @@ def _fetch_available_endpoints(
 
 def fetch_status(router: Any) -> dict[str, Any]:
     """Return available router data, reauthenticating once when necessary."""
+    with router.ha_zyxel_lock:
+        return _fetch_status_locked(router)
+
+
+def _fetch_status_locked(router: Any) -> dict[str, Any]:
     if not getattr(router, "sessionkey", None):
         authenticate(router)
 

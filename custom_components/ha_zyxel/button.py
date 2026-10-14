@@ -36,11 +36,15 @@ class ZyxelRebootButton(ButtonEntity):
         self._attr_icon = "mdi:restart"
         self._attr_name = "Zyxel Reboot Device"
 
+    def _reboot(self) -> None:
+        with self._router.ha_zyxel_lock:
+            self._router.reboot()
+
     async def async_press(self) -> None:
         """Handle the button press."""
         _LOGGER.info("Attempting to reboot Zyxel device")
         try:
-            await self.hass.async_add_executor_job(self._router.reboot)
+            await self.hass.async_add_executor_job(self._reboot)
             _LOGGER.info("Zyxel device reboot command sent successfully")
         except Exception as err:
             _LOGGER.error("Failed to send reboot command: %s", err)
