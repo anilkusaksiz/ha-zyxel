@@ -12,11 +12,11 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from custom_components.ha_zyxel.const import DOMAIN
+from custom_components.ha_zyxel.device_info import build_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -319,12 +319,7 @@ class AbstractZyxelSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._key = key
         self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=f"Zyxel ({entry.data['host']})",
-            manufacturer="Zyxel",
-            model="",
-        )
+        self._attr_device_info = build_device_info(entry, coordinator.data)
 
     @property
     def available(self) -> bool:
