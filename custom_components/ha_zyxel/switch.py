@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -153,8 +154,17 @@ class WifiSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
+        """On only when the network is really on air.
+
+        ``wlEnable`` is the per-network flag, but the band's radio
+        (``radioenable``) must be on too: the modem turns a radio off when its
+        main network is switched off, which silences the guest networks on that
+        band even though their own flag stays set.
+        """
         ssid = self._ssid()
-        return None if ssid is None else bool(ssid.get("wlEnable"))
+        if ssid is None:
+            return None
+        return bool(ssid.get("wlEnable")) and bool(ssid.get("radioenable", True))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -162,6 +172,8 @@ class WifiSwitch(CoordinatorEntity, SwitchEntity):
         return {
             "band": ssid.get("band"),
             "main_network": ssid.get("MainSSID"),
+            "network_flag": ssid.get("wlEnable"),
+            "radio_enabled": ssid.get("radioenable"),
             "channel": ssid.get("channel"),
             "ssid_index": self._index,
         }
@@ -176,6 +188,11 @@ class WifiSwitch(CoordinatorEntity, SwitchEntity):
         ssid = self._ssid()
         if ssid is None:
             return
+        if enabled and not ssid.get("MainSSID") and ssid.get("radioenable") is False:
+            raise HomeAssistantError(
+                f"The {ssid.get('band')} radio is off because its main network is off. "
+                "Turn the main network on first."
+            )
         await self.hass.async_add_executor_job(
             set_wifi_enabled, self._router, self._index, enabled
         )
