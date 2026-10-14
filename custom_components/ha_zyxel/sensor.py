@@ -197,6 +197,9 @@ def _readable_name(key: str, leaf: str | None = None) -> str:
     if len(parts) > 1 and parts[1].split(" ")[0] == parts[0]:
         parts = parts[:1] + [parts[1].removeprefix(parts[0]).strip()] + parts[2:]
     if leaf is not None:
+        # Curated names such as "Cellular RSSI" already carry the section.
+        if len(parts) == 1 and leaf.startswith(parts[0]):
+            parts = []
         parts.append(leaf)
     return " ".join(parts)
 
