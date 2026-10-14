@@ -114,8 +114,9 @@ class WifiSwitch(CoordinatorEntity, SwitchEntity):
         self._index = index
         self._attr_unique_id = f"{entry.entry_id}_wlan_{index}"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
-        # Switching off a main network cuts normal Wi-Fi: opt-in only.
-        self._attr_entity_registry_enabled_default = not main
+        # Upstream keeps main networks opt-in (disabled by default), since
+        # switching one off cuts normal Wi-Fi. This fork exposes them by default.
+        self._attr_entity_registry_enabled_default = True
 
     def _ssid(self) -> dict[str, Any] | None:
         for ssid in (self.coordinator.data or {}).get("wlan_ssids") or []:
