@@ -6,6 +6,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from .api import reboot_router
 from .const import DOMAIN
 from .device_info import build_device_info
 
@@ -35,8 +36,7 @@ class ZyxelRebootButton(ButtonEntity):
         self._attr_name = "Reboot Device"
 
     def _reboot(self) -> None:
-        with self._router.ha_zyxel_lock:
-            self._router.reboot()
+        reboot_router(self._router)
 
     async def async_press(self) -> None:
         """Handle the button press."""

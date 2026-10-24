@@ -259,3 +259,33 @@ def set_wifi_enabled(router: Any, index: int, enabled: bool) -> None:
                 return
         _LOGGER.debug("Wi-Fi change for SSID %s not applied, attempt %s", index, attempt + 1)
     raise ZyxelConnectionError(f"Router did not apply the Wi-Fi change for SSID {index}")
+
+
+def reboot_router(router: Any) -> None:
+    """Reboot the modem the way the web UI does.
+
+    The UI sends ``POST /cgi-bin/Reboot`` with no body and the session key in a
+    ``CSRFToken`` header. nr7101's own reboot() puts the key in the URL instead,
+    which newer firmware rejects with 403.
+    """
+    with router.ha_zyxel_lock:
+        if not getattr(router, "sessionkey", None):
+            authenticate(router)
+        for attempt in range(2):
+            params = dict(router.params)
+            params["headers"] = {
+                **params.get("headers", {}),
+                "X-Requested-With": "XMLHttpRequest",
+                "CSRFToken": str(router.sessionkey),
+            }
+            try:
+                with requests.post(f"{router.url}/cgi-bin/Reboot", **params) as response:
+                    if response.status_code in (401, 403) and attempt == 0:
+                        router.sessionkey = None
+                        authenticate(router)
+                        continue
+                    response.raise_for_status()
+            except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
+                pass  # the modem went down before answering: it is rebooting
+            break
+        router.sessionkey = None  # the session does not survive the reboot
